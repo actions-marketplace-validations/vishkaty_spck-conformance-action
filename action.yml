@@ -1,0 +1,94 @@
+name: 'UCP Conformance (spck)'
+description: >-
+  Behavioral UCP conformance gate: runs the spck-conformance suite against your
+  Universal Commerce Protocol merchant server and fails the build on MUST
+  deviations. Also runs the self-contained agent-side lane. Unofficial;
+  not affiliated with the UCP project.
+author: 'vishkaty'
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  server-url:
+    description: >-
+      Base URL of the UCP merchant server to test (e.g. https://api.example.com
+      or a http://localhost service started earlier in the job). Exactly one of
+      server-url or agent-lane must be set.
+    required: false
+    default: ''
+  agent-lane:
+    description: >-
+      Set to 'true' to run the agent-side conformance lane instead (a reference
+      agent vs an adversarial sandbox; self-contained, no server needed).
+    required: false
+    default: 'false'
+  config:
+    description: >-
+      Path to a merchant config JSON (product_id, discount_codes, ...) to unlock
+      the full lifecycle checks. Scaffold one locally with
+      `spck-conformance --server URL --init`.
+    required: false
+    default: ''
+  junit-path:
+    description: Where to write the JUnit XML report (server mode).
+    required: false
+    default: 'spck-report.xml'
+  package-version:
+    description: >-
+      spck-conformance version to install (empty = latest release on PyPI).
+    required: false
+    default: ''
+  python-version:
+    description: Python version to run the suite with.
+    required: false
+    default: '3.12'
+
+outputs:
+  junit-path:
+    description: Path of the JUnit XML report written in server mode.
+    value: ${{ inputs.junit-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install spck-conformance
+      shell: bash
+      env:
+        PACKAGE_VERSION: ${{ inputs.package-version }}
+      run: |
+        if [ -n "$PACKAGE_VERSION" ]; then
+          python -m pip install --quiet "spck-conformance==$PACKAGE_VERSION"
+        else
+          python -m pip install --quiet spck-conformance
+        fi
+        spck-conformance --help >/dev/null
+
+    - name: Run conformance gate
+      shell: bash
+      env:
+        SERVER_URL: ${{ inputs.server-url }}
+        AGENT_LANE: ${{ inputs.agent-lane }}
+        CONFIG_PATH: ${{ inputs.config }}
+        JUNIT_PATH: ${{ inputs.junit-path }}
+      run: |
+        if [ "$AGENT_LANE" = "true" ] && [ -n "$SERVER_URL" ]; then
+          echo "::error::Set exactly one of server-url or agent-lane, not both." >&2
+          exit 64
+        elif [ "$AGENT_LANE" = "true" ]; then
+          spck-conformance --agent
+        elif [ -z "$SERVER_URL" ]; then
+          echo "::error::One of server-url or agent-lane is required." >&2
+          exit 64
+        else
+          args=( --server "$SERVER_URL" --junit "$JUNIT_PATH" )
+          if [ -n "$CONFIG_PATH" ]; then
+            args+=( --config "$CONFIG_PATH" )
+          fi
+          spck-conformance "${args[@]}"
+        fi

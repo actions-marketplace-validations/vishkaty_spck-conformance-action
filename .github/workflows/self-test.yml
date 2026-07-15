@@ -1,0 +1,124 @@
+name: Self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly: catch drift against the latest PyPI release and samples main.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agent-lane:
+    name: Green path — self-contained agent lane exits 0
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run action in agent-lane mode
+        uses: ./
+        with:
+          agent-lane: 'true'
+
+  discovery-gate:
+    name: Gate closes — non-UCP server fails the build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Start a junk (non-UCP) HTTP server
+        run: |
+          cat > /tmp/junk.py <<'EOF'
+          import http.server
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'text/html')
+                  self.end_headers()
+                  self.wfile.write(b'<html>not ucp</html>')
+              do_POST = do_GET
+              def log_message(self, *a):
+                  pass
+          http.server.ThreadingHTTPServer(('127.0.0.1', 8199), H).serve_forever()
+          EOF
+          python3 /tmp/junk.py &
+          sleep 1
+      - name: Run action against the junk server (must fail)
+        id: gate
+        continue-on-error: true
+        uses: ./
+        with:
+          server-url: 'http://127.0.0.1:8199'
+      - name: Assert the gate closed
+        env:
+          OUTCOME: ${{ steps.gate.outcome }}
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::Expected the gate to fail on a non-UCP server; outcome=$OUTCOME"
+            exit 1
+          fi
+          echo "Gate correctly failed a non-UCP server."
+
+  behavioral-suite:
+    name: E2E — full suite against the UCP sample merchant, JUnit consistent with exit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check out the UCP samples repo (reference Flower Shop)
+        uses: actions/checkout@v5
+        with:
+          repository: Universal-Commerce-Protocol/samples
+          path: samples
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+      - name: Boot the Flower Shop server
+        run: |
+          uv python install 3.12
+          uv sync --directory samples/rest/python/server
+          mkdir -p /tmp/db
+          uv run --directory samples/rest/python/server import_csv.py \
+            --products_db_path=/tmp/db/p.db --transactions_db_path=/tmp/db/t.db \
+            --data_dir=../test_data/flower_shop
+          uv run --directory samples/rest/python/server server.py \
+            --products_db_path=/tmp/db/p.db --transactions_db_path=/tmp/db/t.db \
+            --port=8182 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8182/.well-known/ucp >/dev/null && break
+            [ "$i" -eq 30 ] && { echo "server failed to start"; exit 1; }
+            sleep 1
+          done
+      - name: Run action against the sample merchant
+        id: suite
+        continue-on-error: true
+        uses: ./
+        with:
+          server-url: 'http://127.0.0.1:8182'
+          junit-path: 'spck-report.xml'
+      - name: Assert JUnit report is consistent with the gate outcome
+        env:
+          OUTCOME: ${{ steps.suite.outcome }}
+        run: |
+          python3 - <<'EOF'
+          import os, sys, xml.etree.ElementTree as ET
+          root = ET.parse("spck-report.xml").getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests = int(suite.get("tests", 0))
+          failures = int(suite.get("failures", 0)) + int(suite.get("errors") or 0)
+          outcome = os.environ["OUTCOME"]
+          print(f"junit: tests={tests} failures={failures} outcome={outcome}")
+          if tests == 0:
+              sys.exit("JUnit report has zero tests — the suite did not run")
+          if outcome == "success" and failures != 0:
+              sys.exit("gate passed but JUnit records failures — inconsistent")
+          if outcome == "failure" and failures == 0:
+              sys.exit("gate failed but JUnit records no failures — inconsistent")
+          EOF
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spck-report
+          path: spck-report.xml
