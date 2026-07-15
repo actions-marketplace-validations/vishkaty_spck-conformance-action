@@ -41,8 +41,9 @@ jobs:
           path: spck-report.xml
 ```
 
-The JUnit report renders in any CI test viewer; each entry carries the spec
-citation for the requirement it checked.
+The JUnit report renders in any CI test viewer; entries are named by their
+register check ids, and deviations carry the spec citation for the requirement
+they violated.
 
 ### Run the agent-side lane (no server needed)
 
