@@ -1,9 +1,7 @@
 name: 'UCP Conformance (spck)'
 description: >-
-  Behavioral UCP conformance gate: runs the spck-conformance suite against your
-  Universal Commerce Protocol merchant server and fails the build on MUST
-  deviations. Also runs the self-contained agent-side lane. Unofficial;
-  not affiliated with the UCP project.
+  Behavioral UCP conformance gate — fails your build on MUST deviations, with
+  spec-cited JUnit output. Unofficial.
 author: 'vishkaty'
 branding:
   icon: 'check-circle'
